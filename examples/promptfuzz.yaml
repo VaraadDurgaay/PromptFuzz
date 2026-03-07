@@ -1,0 +1,11 @@
+target: "https://api.example.com/chat"
+context: "customer support bot"
+categories:
+  - jailbreak
+  - injection
+max_workers: 5
+timeout: 30
+headers:
+  Authorization: "Bearer YOUR_API_KEY_HERE"
+input_field: message
+output_field: response
