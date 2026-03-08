@@ -59,7 +59,7 @@ click.rich_click.OPTION_GROUPS = {
         },
         {
             "name": "Output options",
-            "options": ["--output", "--json", "--severity"],
+            "options": ["--output", "--txt", "--json", "--severity"],
         },
         {
             "name": "CI/CD",
@@ -81,7 +81,7 @@ click.rich_click.OPTION_GROUPS = {
         },
         {
             "name": "Output options",
-            "options": ["--output", "--json", "--severity"],
+            "options": ["--output", "--txt", "--json", "--severity"],
         },
         {
             "name": "CI/CD",
@@ -106,6 +106,7 @@ def _run_scan(
     context: str,
     categories: tuple[str, ...],
     output: str | None,
+    txt_output: str | None,
     json_output: str | None,
     severity: str,
     fail_on: str | None,
@@ -121,6 +122,7 @@ def _run_scan(
         context: Human-readable target description.
         categories: Attack categories to run.
         output: Path for HTML report, or None.
+        txt_output: Path for TXT report, or None.
         json_output: Path for JSON output, or None.
         severity: Minimum severity to display.
         fail_on: Exit code 1 if any vuln at/above this severity.
@@ -163,6 +165,10 @@ def _run_scan(
 
     if output:
         result.save(output)
+
+    if txt_output:
+        result.to_txt(txt_output)
+        _console.print(f"[dim]TXT report saved to: {txt_output}[/dim]")
 
     if json_output:
         result.to_json(json_output)
@@ -263,6 +269,7 @@ def main(ctx: click.Context) -> None:
     help="Attack categories (repeatable). Default: all.",
 )
 @click.option("--output", "-o", default=None, help="Save HTML report to path.")
+@click.option("--txt", "txt_output", default=None, help="Save TXT report to path.")
 @click.option("--json", "json_output", default=None, help="Save JSON report to path.")
 @click.option(
     "--severity", "-s", default="low",
@@ -286,6 +293,7 @@ def test_cmd(
     context: str,
     categories: tuple[str, ...],
     output: str | None,
+    txt_output: str | None,
     json_output: str | None,
     severity: str,
     fail_on: str | None,
@@ -299,6 +307,7 @@ def test_cmd(
     Examples:
       $ promptfuzz test https://api.mychatbot.com/chat
       $ promptfuzz test https://api.mychatbot.com/chat --output report.html
+      $ promptfuzz test https://api.mychatbot.com/chat --txt report.txt
       $ promptfuzz test myapp:chat_handler --categories jailbreak injection
       $ promptfuzz test https://api.mychatbot.com/chat --fail-on high
     """
@@ -307,6 +316,7 @@ def test_cmd(
         context=context,
         categories=categories,
         output=output,
+        txt_output=txt_output,
         json_output=json_output,
         severity=severity,
         fail_on=fail_on,
@@ -326,6 +336,7 @@ def test_cmd(
     help="Attack categories to run (repeatable). Default: all.",
 )
 @click.option("--output", "-o", default=None, help="Save HTML report to path.")
+@click.option("--txt", "txt_output", default=None, help="Save TXT report to path.")
 @click.option("--json", "json_output", default=None, help="Save JSON report to path.")
 @click.option(
     "--severity", "-s", default="low",
@@ -351,6 +362,7 @@ def scan(
     context: str,
     categories: tuple[str, ...],
     output: str | None,
+    txt_output: str | None,
     json_output: str | None,
     severity: str,
     fail_on: str | None,
@@ -401,6 +413,9 @@ def scan(
 
         if output:
             result.save(output)
+        if txt_output:
+            result.to_txt(txt_output)
+            _console.print(f"[dim]TXT report saved to: {txt_output}[/dim]")
         if json_output:
             result.to_json(json_output)
         if fail_on:
@@ -421,6 +436,7 @@ def scan(
             context=context,
             categories=categories,
             output=output,
+            txt_output=txt_output,
             json_output=json_output,
             severity=severity,
             fail_on=fail_on,
