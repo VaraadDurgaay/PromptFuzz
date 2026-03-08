@@ -429,10 +429,28 @@ class Reporter:
             lines += [sep, "No vulnerabilities found.", sep, ""]
 
         if result.passed:
-            lines += ["PASSED CHECKS", "-" * 40]
-            for ar in result.passed:
-                lines.append(f"  OK  {ar.attack.id} — {ar.attack.name}")
-            lines.append("")
+            lines += [sep, "PASSED CHECKS", sep, ""]
+            for i, ar in enumerate(result.passed, 1):
+                lines += [
+                    f"[{i}] {ar.attack.id} — {ar.attack.name}",
+                    f"    Severity   : {ar.attack.severity.upper()}",
+                    f"    Category   : {ar.attack.category}",
+                    "    Prompt     :",
+                ]
+                prompt = ar.attack.prompt
+                for chunk_start in range(0, min(len(prompt), 500), 72):
+                    lines.append(f"      {prompt[chunk_start:chunk_start + 72]}")
+                if len(prompt) > 500:
+                    lines.append("      [prompt truncated...]")
+                lines.append("    Model Output:")
+                model_response = ar.response or "(no response)"
+                for chunk_start in range(0, min(len(model_response), 600), 72):
+                    lines.append(
+                        f"      {model_response[chunk_start:chunk_start + 72]}"
+                    )
+                if len(model_response) > 600:
+                    lines.append("      [response truncated...]")
+                lines.append("")
 
         lines += [sep, "End of report", sep]
 
