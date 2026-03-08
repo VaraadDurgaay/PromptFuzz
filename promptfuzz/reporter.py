@@ -336,8 +336,9 @@ class Reporter:
         env = Environment(autoescape=True)
         template = env.from_string(_HTML_TEMPLATE)
         html = template.render(result=result, version=__version__)
-        Path(path).write_text(html, encoding="utf-8")
-        _console.print(f"[green]HTML report saved to:[/green] {path}")
+        abs_path = Path(path).resolve()
+        abs_path.write_text(html, encoding="utf-8")
+        _console.print(f"[green]HTML report saved to:[/green] {abs_path}")
 
     def save_json(self, result: "FuzzResult", path: str) -> None:
         """Serialise FuzzResult to a JSON file.
@@ -347,10 +348,9 @@ class Reporter:
             path: Destination file path.
         """
         data = dataclasses.asdict(result)
-        Path(path).write_text(
-            json.dumps(data, indent=2, default=str), encoding="utf-8"
-        )
-        _console.print(f"[green]JSON report saved to:[/green] {path}")
+        abs_path = Path(path).resolve()
+        abs_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        _console.print(f"[green]JSON report saved to:[/green] {abs_path}")
 
     def save_txt(self, result: "FuzzResult", path: str) -> None:
         """Save a plain-text vulnerability report.
@@ -436,7 +436,6 @@ class Reporter:
 
         lines += [sep, "End of report", sep]
 
-        Path(path).write_text(
-            "\n".join(lines), encoding="utf-8", errors="replace"
-        )
-        _console.print(f"[green]TXT report saved to:[/green] {path}")
+        abs_path = Path(path).resolve()
+        abs_path.write_text("\n".join(lines), encoding="utf-8", errors="replace")
+        _console.print(f"[green]TXT report saved to:[/green] {abs_path}")

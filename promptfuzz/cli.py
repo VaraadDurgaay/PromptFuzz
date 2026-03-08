@@ -168,7 +168,6 @@ def _run_scan(
 
     if txt_output:
         result.to_txt(txt_output)
-        _console.print(f"[dim]TXT report saved to: {txt_output}[/dim]")
 
     if json_output:
         result.to_json(json_output)
@@ -415,7 +414,6 @@ def scan(
             result.save(output)
         if txt_output:
             result.to_txt(txt_output)
-            _console.print(f"[dim]TXT report saved to: {txt_output}[/dim]")
         if json_output:
             result.to_json(json_output)
         if fail_on:
