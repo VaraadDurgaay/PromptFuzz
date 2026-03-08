@@ -65,3 +65,11 @@ Thumbs.db
 .env
 .env.*
 secrets.yaml
+
+# Target-specific test scripts
+probe_pict.py
+browser_test.py
+my_test.py
+
+# Generated reports
+report.txt
