@@ -388,69 +388,59 @@ class Reporter:
         ]
 
         severity_order = ["critical", "high", "medium", "low"]
-        sorted_vulns = sorted(
-            result.vulnerabilities,
-            key=lambda v: severity_order.index(v.severity),
-        )
 
-        if sorted_vulns:
-            lines += [sep, "VULNERABILITIES", sep, ""]
-            for i, vuln in enumerate(sorted_vulns, 1):
-                lines += [
-                    f"[{i}] {vuln.id} — {vuln.name}",
-                    f"    Severity   : {vuln.severity.upper()}",
-                    f"    Category   : {vuln.attack.category}",
-                    f"    Confidence : {vuln.result.confidence * 100:.0f}%",
-                    f"    Description: {vuln.attack.description}",
-                    f"    Evidence   : {vuln.result.evidence}",
-                    "    Prompt     :",
-                ]
-                # Wrap long prompt lines at 72 chars
-                prompt = vuln.attack.prompt
-                for chunk_start in range(0, min(len(prompt), 500), 72):
-                    lines.append(f"      {prompt[chunk_start:chunk_start + 72]}")
-                if len(prompt) > 500:
-                    lines.append("      [prompt truncated...]")
-                # Show the model's actual response
-                lines.append("    Model Output:")
-                model_response = vuln.result.response or "(no response)"
-                for chunk_start in range(0, min(len(model_response), 600), 72):
-                    lines.append(
-                        f"      {model_response[chunk_start:chunk_start + 72]}"
-                    )
-                if len(model_response) > 600:
-                    lines.append("      [response truncated...]")
-                lines += [
-                    f"    Remediation: {vuln.attack.remediation}",
-                    f"    Tags       : {', '.join(vuln.attack.tags)}",
-                    "",
-                ]
-        else:
-            lines += [sep, "No vulnerabilities found.", sep, ""]
+        # Build a unified list of every attempt: (status, attack, response, extra)
+        # "extra" holds vuln-specific fields (confidence, evidence, remediation)
+        all_attempts: list[tuple[str, object, str, dict]] = []
+        for vuln in result.vulnerabilities:
+            all_attempts.append((
+                "VULNERABLE",
+                vuln.attack,
+                vuln.result.response or "(no response)",
+                {
+                    "confidence": f"{vuln.result.confidence * 100:.0f}%",
+                    "evidence": vuln.result.evidence,
+                    "remediation": vuln.attack.remediation,
+                },
+            ))
+        for ar in result.passed:
+            all_attempts.append(("PASSED", ar.attack, ar.response or "(no response)", {}))
 
-        if result.passed:
-            lines += [sep, "PASSED CHECKS", sep, ""]
-            for i, ar in enumerate(result.passed, 1):
-                lines += [
-                    f"[{i}] {ar.attack.id} — {ar.attack.name}",
-                    f"    Severity   : {ar.attack.severity.upper()}",
-                    f"    Category   : {ar.attack.category}",
-                    "    Prompt     :",
-                ]
-                prompt = ar.attack.prompt
-                for chunk_start in range(0, min(len(prompt), 500), 72):
-                    lines.append(f"      {prompt[chunk_start:chunk_start + 72]}")
-                if len(prompt) > 500:
-                    lines.append("      [prompt truncated...]")
-                lines.append("    Model Output:")
-                model_response = ar.response or "(no response)"
-                for chunk_start in range(0, min(len(model_response), 600), 72):
-                    lines.append(
-                        f"      {model_response[chunk_start:chunk_start + 72]}"
-                    )
-                if len(model_response) > 600:
-                    lines.append("      [response truncated...]")
-                lines.append("")
+        # Sort: vulnerabilities first (by severity), then passed
+        def _sort_key(item: tuple) -> tuple:
+            status, attack, *_ = item
+            sev_idx = severity_order.index(attack.severity) if status == "VULNERABLE" else 99
+            return (0 if status == "VULNERABLE" else 1, sev_idx)
+
+        all_attempts.sort(key=_sort_key)
+
+        lines += [sep, f"ALL ATTEMPTS ({len(all_attempts)})", sep, ""]
+        for i, (status, attack, model_response, extra) in enumerate(all_attempts, 1):
+            status_label = "VULNERABLE" if status == "VULNERABLE" else "passed   "
+            lines += [
+                f"[{i}] [{status_label}] {attack.id} — {attack.name}",
+                f"    Severity   : {attack.severity.upper()}",
+                f"    Category   : {attack.category}",
+            ]
+            if extra.get("confidence"):
+                lines.append(f"    Confidence : {extra['confidence']}")
+            if extra.get("evidence"):
+                lines.append(f"    Evidence   : {extra['evidence']}")
+            lines.append("    Prompt     :")
+            prompt = attack.prompt
+            for chunk_start in range(0, min(len(prompt), 500), 72):
+                lines.append(f"      {prompt[chunk_start:chunk_start + 72]}")
+            if len(prompt) > 500:
+                lines.append("      [prompt truncated...]")
+            lines.append("    Model Output:")
+            for chunk_start in range(0, min(len(model_response), 600), 72):
+                lines.append(f"      {model_response[chunk_start:chunk_start + 72]}")
+            if len(model_response) > 600:
+                lines.append("      [response truncated...]")
+            if extra.get("remediation"):
+                lines.append(f"    Remediation: {extra['remediation']}")
+                lines.append(f"    Tags       : {', '.join(attack.tags)}")
+            lines.append("")
 
         lines += [sep, "End of report", sep]
 
