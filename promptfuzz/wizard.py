@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import sys
+from typing import Any
 
 import questionary
 from rich.console import Console
@@ -14,6 +17,9 @@ from promptfuzz import __version__
 from promptfuzz.attacks.loader import VALID_CATEGORIES
 
 _console = Console()
+
+# Sentinel returned by step functions when the user presses ESC (go back).
+_BACK = object()
 
 _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "jailbreak": "Persona switches, DAN, roleplay bypasses",
@@ -38,6 +44,160 @@ _SEVERITY_CHOICES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Curl parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_curl(curl_str: str) -> dict[str, Any]:
+    """Parse a curl command string and extract URL, headers, and body fields.
+
+    Args:
+        curl_str: Raw curl command, possibly multi-line with backslash continuations.
+
+    Returns:
+        Dict with keys 'url' (str|None), 'headers' (dict), 'body_fields' (dict).
+    """
+    curl_str = curl_str.replace("\\\n", " ").replace("\\\r\n", " ")
+
+    try:
+        tokens = shlex.split(curl_str)
+    except ValueError:
+        tokens = curl_str.split()
+
+    result: dict[str, Any] = {"url": None, "headers": {}, "body_fields": {}}
+
+    skip_flags = {"-X", "--request", "--compressed", "-s", "--silent", "-v", "--verbose"}
+    data_flags = {"--data-raw", "--data", "-d", "--data-urlencode"}
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+
+        if tok == "curl":
+            i += 1
+            continue
+
+        if tok in skip_flags:
+            i += 2
+            continue
+
+        if tok in {"-H", "--header"}:
+            i += 1
+            if i < len(tokens):
+                header_str = tokens[i]
+                if ":" in header_str:
+                    key, _, val = header_str.partition(":")
+                    result["headers"][key.strip()] = val.strip()
+            i += 1
+            continue
+
+        if tok.startswith("-H"):
+            header_str = tok[2:]
+            if ":" in header_str:
+                key, _, val = header_str.partition(":")
+                result["headers"][key.strip()] = val.strip()
+            i += 1
+            continue
+
+        if tok in data_flags:
+            i += 1
+            if i < len(tokens):
+                raw = tokens[i]
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        result["body_fields"] = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            i += 1
+            continue
+
+        if tok.startswith("--data") or tok.startswith("-d"):
+            _, _, val = tok.partition("=")
+            if val:
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        result["body_fields"] = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            i += 1
+            continue
+
+        if tok.startswith("http://") or tok.startswith("https://"):
+            result["url"] = tok
+            i += 1
+            continue
+
+        i += 1
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# HTTP probing
+# ---------------------------------------------------------------------------
+
+
+def _probe_url_with_headers(
+    url: str,
+    headers: dict[str, str],
+    input_field: str,
+    output_field: str,
+    extra_fields: dict[str, str],
+) -> tuple[bool, str, dict[str, Any]]:
+    """Send a test POST to the URL and return (success, message, response_body).
+
+    Args:
+        url: Target URL.
+        headers: HTTP headers to include.
+        input_field: JSON key for the prompt.
+        output_field: JSON key for the reply.
+        extra_fields: Extra fixed fields to include in the payload.
+
+    Returns:
+        Tuple of (ok, diagnostic_message, response_json_or_empty_dict).
+    """
+    import httpx
+
+    payload = {input_field: "hello", **extra_fields}
+    try:
+        r = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+        if r.status_code >= 400:
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text[:300]
+            return False, (
+                f"HTTP {r.status_code} — API rejected the request.\n"
+                f"  Response: {body}\n"
+                f"  Hint: Check if the API requires extra fields "
+                f"(e.g. conversation_id, session_id)."
+            ), {}
+        try:
+            data = r.json()
+        except Exception:
+            return True, "Connected (non-JSON response). output_field ignored.", {}
+
+        if output_field and output_field not in data:
+            available = ", ".join(str(k) for k in data.keys()) or "(empty)"
+            return False, (
+                f"Connected but response field '{output_field}' not found.\n"
+                f"  Available keys: {available}\n"
+                f"  Hint: Set the response field to one of the above."
+            ), data
+        return True, f"OK — received reply via '{output_field}' field.", data
+
+    except httpx.ConnectError:
+        return False, (
+            f"Cannot connect to {url}.\n"
+            f"  Hint: Is the server running? Check the URL."
+        ), {}
+    except httpx.TimeoutException:
+        return False, "Connection timed out (10s). Is the server slow or unreachable?", {}
+
+
 def _probe_url(
     url: str,
     input_field: str,
@@ -55,99 +215,17 @@ def _probe_url(
     Returns:
         Tuple of (ok, diagnostic_message).
     """
-    import httpx
-
-    payload = {input_field: "hello", **extra_fields}
-    try:
-        r = httpx.post(url, json=payload, timeout=10.0)
-        if r.status_code >= 400:
-            try:
-                body = r.json()
-            except Exception:
-                body = r.text[:300]
-            return False, (
-                f"HTTP {r.status_code} — API rejected the request.\n"
-                f"  Response: {body}\n"
-                f"  Hint: Check if the API requires extra fields "
-                f"(e.g. conversation_id, session_id)."
-            )
-        try:
-            data = r.json()
-        except Exception:
-            return True, "Connected (non-JSON response). output_field ignored."
-        if output_field not in data:
-            available = ", ".join(str(k) for k in data.keys()) or "(empty)"
-            return False, (
-                f"Connected but response field '{output_field}' not found.\n"
-                f"  Available keys: {available}\n"
-                f"  Hint: Set the response field to one of the above."
-            )
-        return True, f"OK — received reply via '{output_field}' field."
-    except httpx.ConnectError:
-        return False, (
-            f"Cannot connect to {url}.\n"
-            f"  Hint: Is the server running? Check the URL."
-        )
-    except httpx.TimeoutException:
-        return False, "Connection timed out (10s). Is the server slow or unreachable?"
+    ok, msg, _ = _probe_url_with_headers(url, {}, input_field, output_field, extra_fields)
+    return ok, msg
 
 
-def _ask_url_fields(url: str) -> tuple[str, dict[str, str]]:
-    """Ask for the response field name and extra payload fields, then probe the URL.
-
-    Args:
-        url: The target URL (used for the connection test).
-
-    Returns:
-        Tuple of (output_field, extra_fields dict).
-    """
-    while True:
-        output_field = questionary.text(
-            "Response field name (JSON key the API returns the reply in):",
-            default="response",
-        ).ask()
-        if output_field is None:
-            sys.exit(0)
-
-        extra_raw = questionary.text(
-            "Extra payload fields? (e.g. conversation_id=abc123,api_key=xyz) "
-            "Leave blank to skip:",
-            default="",
-        ).ask()
-        if extra_raw is None:
-            sys.exit(0)
-
-        extra_fields: dict[str, str] = {}
-        if extra_raw.strip():
-            for pair in extra_raw.split(","):
-                pair = pair.strip()
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    extra_fields[k.strip()] = v.strip()
-
-        output_field = output_field.strip() or "response"
-
-        # Connection test
-        _console.print(f"[dim]Testing connection to {url}...[/dim]")
-        ok, msg = _probe_url(url, "message", output_field, extra_fields)
-        if ok:
-            _console.print(f"[green]Connection test passed:[/green] {msg}")
-            return output_field, extra_fields
-        else:
-            _console.print(f"[bold yellow]Connection test failed:[/bold yellow] {msg}")
-            retry = questionary.confirm(
-                "Fix the settings and try again?", default=True
-            ).ask()
-            if not retry:
-                return output_field, extra_fields
+# ---------------------------------------------------------------------------
+# Individual step functions — return value or _BACK on ESC
+# ---------------------------------------------------------------------------
 
 
-def _ask_target() -> str:
-    """Ask for target type and then the specific target string.
-
-    Returns:
-        A URL string or a 'module:function' import path.
-    """
+def _step_ask_target() -> Any:
+    """Ask target type and URL/path. Returns target string or _BACK."""
     target_type = questionary.select(
         "What is your target?",
         choices=[
@@ -157,7 +235,7 @@ def _ask_target() -> str:
     ).ask()
 
     if target_type is None:
-        sys.exit(0)
+        return _BACK
 
     if target_type == "url":
         while True:
@@ -170,7 +248,7 @@ def _ask_target() -> str:
                 ),
             ).ask()
             if url is None:
-                sys.exit(0)
+                return _BACK
             return url
     else:
         while True:
@@ -183,16 +261,91 @@ def _ask_target() -> str:
                 ),
             ).ask()
             if path is None:
-                sys.exit(0)
+                return _BACK
             return path
 
 
-def _ask_categories() -> list[str]:
-    """Ask which attack categories to run via multi-select checkboxes.
+def _step_ask_headers() -> Any:
+    """Ask for auth/custom headers. Returns dict or _BACK."""
+    headers_raw = questionary.text(
+        "Auth/custom headers? (e.g. Authorization=Bearer xyz,X-Workspace-Id=abc) "
+        "Leave blank to skip:",
+        default="",
+    ).ask()
 
-    Returns:
-        List of selected category names (at least one).
-    """
+    if headers_raw is None:
+        return _BACK
+
+    headers: dict[str, str] = {}
+    if headers_raw.strip():
+        for pair in headers_raw.split(","):
+            pair = pair.strip()
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                headers[k.strip()] = v.strip()
+    return headers
+
+
+def _step_ask_extra_fields() -> Any:
+    """Ask for extra payload fields. Returns dict or _BACK."""
+    extra_raw = questionary.text(
+        "Extra payload fields? (e.g. conversation_id=abc123,api_key=xyz) "
+        "Leave blank to skip:",
+        default="",
+    ).ask()
+
+    if extra_raw is None:
+        return _BACK
+
+    extra_fields: dict[str, str] = {}
+    if extra_raw.strip():
+        for pair in extra_raw.split(","):
+            pair = pair.strip()
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                extra_fields[k.strip()] = v.strip()
+    return extra_fields
+
+
+def _step_probe_and_pick_output(
+    url: str,
+    headers: dict[str, str],
+    extra_fields: dict[str, str],
+) -> Any:
+    """Probe URL and let user pick output field from response keys. Returns field str or _BACK."""
+    _console.print(f"[dim]Testing connection to {url}...[/dim]")
+    ok, msg, response_data = _probe_url_with_headers(
+        url, headers, "message", "", extra_fields
+    )
+
+    if ok and response_data:
+        _console.print(f"[green]Connected![/green]")
+        result = _select_output_field_from_response(response_data)
+        if result is None:
+            return _BACK
+        return result
+    elif ok:
+        _console.print(f"[green]Connected![/green] {msg}")
+    else:
+        _console.print(f"[bold yellow]Connection test failed:[/bold yellow] {msg}")
+        retry = questionary.confirm("Fix the settings and try again?", default=True).ask()
+        if retry is None:
+            return _BACK
+        if retry:
+            # Signal caller to go back to extra_fields step
+            return _BACK
+
+    field = questionary.text(
+        "Response field name (JSON key the API returns the reply in):",
+        default="response",
+    ).ask()
+    if field is None:
+        return _BACK
+    return (field or "response").strip()
+
+
+def _step_ask_categories() -> Any:
+    """Multi-select attack categories. Returns list or _BACK."""
     choices = [
         questionary.Choice(
             f"{cat:<20} — {_CATEGORY_DESCRIPTIONS.get(cat, '')}",
@@ -209,96 +362,50 @@ def _ask_categories() -> list[str]:
         ).ask()
 
         if selected is None:
-            sys.exit(0)
+            return _BACK
         if selected:
             return selected
         _console.print("[yellow]Please select at least one category.[/yellow]")
 
 
-def _ask_output() -> str:
-    """Ask for the desired output format.
-
-    Returns:
-        One of 'terminal', 'txt', 'html', 'all'.
-    """
+def _step_ask_output() -> Any:
+    """Ask output format. Returns str or _BACK."""
     result = questionary.select(
         "Output format:",
         choices=_OUTPUT_CHOICES,
     ).ask()
     if result is None:
-        sys.exit(0)
+        return _BACK
     return result
 
 
-def _ask_severity() -> str:
-    """Ask for the minimum severity to include in the report.
-
-    Returns:
-        One of 'low', 'medium', 'high', 'critical'.
-    """
+def _step_ask_severity() -> Any:
+    """Ask minimum severity. Returns str or _BACK."""
     result = questionary.select(
         "Minimum severity to report:",
         choices=_SEVERITY_CHOICES,
     ).ask()
     if result is None:
-        sys.exit(0)
+        return _BACK
     return result
 
 
-def _ask_ai_attacks() -> bool:
-    """Ask whether to use AI-generated attacks (only when API key is present).
-
-    Returns:
-        True if the user wants AI-generated attacks, False otherwise.
-    """
-    if not os.environ.get("OPENAI_API_KEY"):
-        return False
-
-    result = questionary.confirm(
-        "Use AI-generated attacks? Requires OPENAI_API_KEY",
-        default=False,
-    ).ask()
-    if result is None:
-        sys.exit(0)
-    return result
-
-
-def run_wizard() -> None:
-    """Run the interactive setup wizard and launch a scan based on answers.
-
-    Asks the user for target, categories, output format, severity threshold,
-    and whether to use AI-generated attacks. Prints a summary panel and
-    waits for confirmation before starting the scan.
-    """
-    _console.print()
-    _console.print(
-        Panel(
-            f"[bold cyan]PromptFuzz[/bold cyan] v{__version__} "
-            "— LLM Security Testing",
-            expand=False,
-            border_style="dim",
-        )
-    )
-    _console.print()
-
-    target = _ask_target()
-    output_field = "response"
-    extra_fields: dict[str, str] = {}
-    if target.startswith("http://") or target.startswith("https://"):
-        output_field, extra_fields = _ask_url_fields(target)
-    categories = _ask_categories()
-    output_fmt = _ask_output()
-    severity = _ask_severity()
-    use_ai = _ask_ai_attacks()
-
-    # Load attack count for the chosen categories
+def _step_confirm_and_launch(
+    target: str,
+    categories: list[str],
+    output_fmt: str,
+    severity: str,
+    output_field: str,
+    extra_fields: dict[str, str],
+    headers: dict[str, str],
+) -> Any:
+    """Show summary panel and ask to confirm. Returns True to launch, _BACK on ESC, False on No."""
     from promptfuzz.attacks.loader import AttackLoader
 
     loader = AttackLoader()
     attacks = loader.load_categories(categories)
     attack_count = len(attacks)
 
-    # Build summary
     output_label = {
         "terminal": "Terminal only",
         "txt": "Terminal + report.txt",
@@ -317,11 +424,10 @@ def run_wizard() -> None:
     summary.append(f"{severity}+\n")
     if extra_fields:
         summary.append("  Extra    : ", style="dim")
-        extra_str = ", ".join(f"{k}={v}" for k, v in extra_fields.items())
-        summary.append(f"{extra_str}\n")
-    if use_ai:
-        summary.append("  AI attacks: ", style="dim")
-        summary.append("enabled\n", style="yellow")
+        summary.append(f"{', '.join(f'{k}={v}' for k, v in extra_fields.items())}\n")
+    if headers:
+        summary.append("  Headers  : ", style="dim")
+        summary.append(f"{', '.join(headers.keys())}\n")
 
     _console.print()
     _console.print(Panel(summary, title="Scan configuration", border_style="cyan"))
@@ -330,12 +436,554 @@ def run_wizard() -> None:
     go = questionary.confirm(
         "Press ENTER to start scan (Ctrl+C to cancel)", default=True
     ).ask()
-    if not go:
-        _console.print("[dim]Scan cancelled.[/dim]")
-        sys.exit(0)
+
+    if go is None:
+        return _BACK
+    return go
+
+
+def _select_output_field_from_response(
+    response_data: dict[str, Any],
+) -> str | None:
+    """Present response keys as a select list; fall back to manual entry.
+
+    Args:
+        response_data: Parsed JSON response from a probe request.
+
+    Returns:
+        The chosen output field name, or None if ESC was pressed.
+    """
+    str_keys = [k for k, v in response_data.items() if isinstance(v, str)]
+    all_keys = list(response_data.keys())
+    candidates = str_keys if str_keys else all_keys
+
+    if not candidates:
+        fallback = questionary.text(
+            "Response field name (JSON key the API returns the reply in):",
+            default="response",
+        ).ask()
+        if fallback is None:
+            return None
+        return (fallback or "response").strip()
+
+    choices = [questionary.Choice(k, value=k) for k in candidates]
+    choices.append(questionary.Choice("(type manually)", value="__manual__"))
+
+    selected = questionary.select(
+        "Connected! Which field contains the chatbot's reply?",
+        choices=choices,
+    ).ask()
+
+    if selected is None:
+        return None
+
+    if selected == "__manual__":
+        manual = questionary.text(
+            "Response field name:",
+            default="response",
+        ).ask()
+        if manual is None:
+            return None
+        return (manual or "response").strip()
+
+    return selected
+
+
+def _ask_ai_attacks() -> bool:
+    """Ask whether to use AI-generated attacks (only when API key is present).
+
+    Returns:
+        True if the user wants AI-generated attacks, False otherwise.
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        return False
+
+    result = questionary.confirm(
+        "Use AI-generated attacks? Requires OPENAI_API_KEY",
+        default=False,
+    ).ask()
+    if result is None:
+        return False
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Manual wizard — step loop with ESC = go back
+# ---------------------------------------------------------------------------
+
+
+def _run_manual_wizard() -> None:
+    """Run the step-by-step guided setup wizard with ESC-to-go-back support."""
+    # Mutable state accumulated across steps
+    target: str = ""
+    headers: dict[str, str] = {}
+    extra_fields: dict[str, str] = {}
+    output_field: str = "response"
+    categories: list[str] = []
+    output_fmt: str = "terminal"
+    severity: str = "low"
+
+    # Steps for URL targets: 0=target, 1=headers, 2=extra_fields, 3=output_field,
+    #                         4=categories, 5=output, 6=severity, 7=confirm
+    # Steps for function targets: 0=target, 1=categories, 2=output, 3=severity, 4=confirm
+    # We handle this by using a unified step index and skipping URL-only steps for functions.
+
+    step = 0
+    while True:
+
+        # ── Step 0: target ──────────────────────────────────────────────────
+        if step == 0:
+            result = _step_ask_target()
+            if result is _BACK:
+                run_wizard()
+                return
+            target = result
+            step = 1
+
+        # ── Step 1: headers (URL only) ───────────────────────────────────────
+        elif step == 1:
+            if target.startswith("http://") or target.startswith("https://"):
+                result = _step_ask_headers()
+                if result is _BACK:
+                    step = 0
+                    continue
+                headers = result
+            step = 2
+
+        # ── Step 2: extra fields (URL only) ─────────────────────────────────
+        elif step == 2:
+            if target.startswith("http://") or target.startswith("https://"):
+                result = _step_ask_extra_fields()
+                if result is _BACK:
+                    step = 1
+                    continue
+                extra_fields = result
+            step = 3
+
+        # ── Step 3: probe + output field (URL only) ──────────────────────────
+        elif step == 3:
+            if target.startswith("http://") or target.startswith("https://"):
+                result = _step_probe_and_pick_output(target, headers, extra_fields)
+                if result is _BACK:
+                    step = 2
+                    continue
+                output_field = result
+            step = 4
+
+        # ── Step 4: categories ───────────────────────────────────────────────
+        elif step == 4:
+            result = _step_ask_categories()
+            if result is _BACK:
+                # Go back to output_field step (or target step for functions)
+                step = 3 if (target.startswith("http://") or target.startswith("https://")) else 0
+                continue
+            categories = result
+            step = 5
+
+        # ── Step 5: output format ────────────────────────────────────────────
+        elif step == 5:
+            result = _step_ask_output()
+            if result is _BACK:
+                step = 4
+                continue
+            output_fmt = result
+            step = 6
+
+        # ── Step 6: severity ─────────────────────────────────────────────────
+        elif step == 6:
+            result = _step_ask_severity()
+            if result is _BACK:
+                step = 5
+                continue
+            severity = result
+            step = 7
+
+        # ── Step 7: confirm + launch ─────────────────────────────────────────
+        elif step == 7:
+            result = _step_confirm_and_launch(
+                target, categories, output_fmt, severity,
+                output_field, extra_fields, headers,
+            )
+            if result is _BACK:
+                step = 6
+                continue
+            if not result:
+                _console.print("[dim]Scan cancelled.[/dim]")
+                sys.exit(0)
+            _console.print()
+            _launch_scan(
+                target, categories, output_fmt, severity,
+                output_field, extra_fields, headers=headers,
+            )
+            return
+
+
+# ---------------------------------------------------------------------------
+# Curl import wizard — step loop with ESC = go back
+# ---------------------------------------------------------------------------
+
+
+def _run_curl_wizard() -> None:
+    """Run the curl-import wizard with ESC-to-go-back support."""
+    url: str = ""
+    headers: dict[str, str] = {}
+    body_fields: dict[str, Any] = {}
+    input_field: str = "message"
+    extra_fields: dict[str, str] = {}
+    output_field: str = "response"
+    categories: list[str] = []
+    output_fmt: str = "terminal"
+    severity: str = "low"
+
+    step = 0
+    while True:
+
+        # ── Step 0: paste curl ───────────────────────────────────────────────
+        if step == 0:
+            _console.print(
+                "[dim]Paste your curl command (single line or with backslash continuations):[/dim]"
+            )
+            curl_raw = questionary.text("curl command:").ask()
+            if curl_raw is None:
+                run_wizard()
+                return
+
+            parsed = _parse_curl(curl_raw.strip())
+            url = parsed["url"] or ""
+            headers = parsed["headers"]
+            body_fields = parsed["body_fields"]
+
+            header_names = ", ".join(headers.keys()) or "(none)"
+            field_names = ", ".join(str(k) for k in body_fields.keys()) or "(none)"
+
+            _console.print()
+            _console.print(
+                Panel(
+                    f"  [dim]URL    :[/dim] [cyan]{url or '(not found)'}[/cyan]\n"
+                    f"  [dim]Headers:[/dim] {header_names}\n"
+                    f"  [dim]Fields :[/dim] {field_names}",
+                    title="Parsed curl",
+                    border_style="green" if url else "yellow",
+                )
+            )
+            _console.print()
+
+            if not url:
+                _console.print(
+                    "[bold yellow]Could not detect URL from curl command.[/bold yellow]"
+                )
+                switch = questionary.confirm(
+                    "Switch to manual setup instead?", default=True
+                ).ask()
+                if switch or switch is None:
+                    _run_manual_wizard()
+                return
+
+            step = 1
+
+        # ── Step 1: input field ──────────────────────────────────────────────
+        elif step == 1:
+            str_fields = [k for k, v in body_fields.items() if isinstance(v, str)]
+            if len(str_fields) == 1:
+                input_field = str_fields[0]
+                _console.print(
+                    f"[dim]Auto-selected input field:[/dim] [green]{input_field}[/green]"
+                )
+                step = 2
+            elif str_fields:
+                sel = questionary.select(
+                    "Which field contains the user's message?",
+                    choices=str_fields,
+                ).ask()
+                if sel is None:
+                    step = 0
+                    continue
+                input_field = sel
+                step = 2
+            else:
+                field_text = questionary.text(
+                    "Input field name (JSON key for the user's message):",
+                    default="message",
+                ).ask()
+                if field_text is None:
+                    step = 0
+                    continue
+                input_field = (field_text or "message").strip()
+                step = 2
+
+        # ── Step 2: probe + output field ─────────────────────────────────────
+        elif step == 2:
+            extra_fields = {k: str(v) for k, v in body_fields.items() if k != input_field}
+            _console.print(f"[dim]Probing {url}...[/dim]")
+            ok, msg, response_data = _probe_url_with_headers(
+                url, headers, input_field, "", extra_fields
+            )
+
+            if ok and response_data:
+                _console.print(f"[green]Connected![/green]")
+                picked = _select_output_field_from_response(response_data)
+                if picked is None:
+                    step = 1
+                    continue
+                output_field = picked
+            elif ok:
+                _console.print(f"[green]Connected![/green] {msg}")
+                field_text = questionary.text(
+                    "Response field name (JSON key the API returns the reply in):",
+                    default="response",
+                ).ask()
+                if field_text is None:
+                    step = 1
+                    continue
+                output_field = (field_text or "response").strip()
+            else:
+                _console.print(f"[bold yellow]Probe failed:[/bold yellow] {msg}")
+                proceed = questionary.confirm(
+                    "Continue anyway (type output field manually)?", default=True
+                ).ask()
+                if proceed is None or not proceed:
+                    step = 1
+                    continue
+                field_text = questionary.text(
+                    "Response field name:", default="response"
+                ).ask()
+                if field_text is None:
+                    step = 1
+                    continue
+                output_field = (field_text or "response").strip()
+
+            step = 3
+
+        # ── Step 3: categories ───────────────────────────────────────────────
+        elif step == 3:
+            result = _step_ask_categories()
+            if result is _BACK:
+                step = 2
+                continue
+            categories = result
+            step = 4
+
+        # ── Step 4: output format ────────────────────────────────────────────
+        elif step == 4:
+            result = _step_ask_output()
+            if result is _BACK:
+                step = 3
+                continue
+            output_fmt = result
+            step = 5
+
+        # ── Step 5: severity ─────────────────────────────────────────────────
+        elif step == 5:
+            result = _step_ask_severity()
+            if result is _BACK:
+                step = 4
+                continue
+            severity = result
+            step = 6
+
+        # ── Step 6: confirm + launch ─────────────────────────────────────────
+        elif step == 6:
+            result = _step_confirm_and_launch(
+                url, categories, output_fmt, severity,
+                output_field, extra_fields, headers,
+            )
+            if result is _BACK:
+                step = 5
+                continue
+            if not result:
+                _console.print("[dim]Scan cancelled.[/dim]")
+                sys.exit(0)
+            _console.print()
+            _launch_scan(
+                url, categories, output_fmt, severity,
+                output_field, extra_fields, headers=headers,
+            )
+            return
+
+
+# ---------------------------------------------------------------------------
+# Quick scan — step loop with ESC = go back
+# ---------------------------------------------------------------------------
+
+
+def _run_quick_scan() -> None:
+    """Ask for URL only and run all categories with defaults. ESC goes back to landing."""
+    url: str = ""
+    output_field: str = "response"
+
+    step = 0
+    while True:
+
+        # ── Step 0: URL ──────────────────────────────────────────────────────
+        if step == 0:
+            url_input = questionary.text(
+                "Enter target URL:",
+                validate=lambda t: (
+                    True
+                    if t.startswith("http://") or t.startswith("https://")
+                    else "Must start with http:// or https://"
+                ),
+            ).ask()
+            if url_input is None:
+                run_wizard()
+                return
+            url = url_input
+            step = 1
+
+        # ── Step 1: probe + output field ─────────────────────────────────────
+        elif step == 1:
+            _console.print(f"[dim]Probing {url}...[/dim]")
+            ok, msg, response_data = _probe_url_with_headers(url, {}, "message", "", {})
+
+            if ok and response_data:
+                str_keys = [k for k, v in response_data.items() if isinstance(v, str)]
+                if len(str_keys) == 1:
+                    output_field = str_keys[0]
+                    _console.print(
+                        f"[green]Connected![/green] Auto-selected output field: "
+                        f"[bold]{output_field}[/bold]"
+                    )
+                    step = 2
+                elif str_keys:
+                    picked = _select_output_field_from_response(response_data)
+                    if picked is None:
+                        step = 0
+                        continue
+                    output_field = picked
+                    step = 2
+                else:
+                    _console.print(f"[green]Connected![/green]")
+                    step = 2
+            elif ok:
+                _console.print(f"[green]Connected![/green] {msg}")
+                step = 2
+            else:
+                _console.print(f"[bold yellow]Probe failed:[/bold yellow] {msg}")
+                proceed = questionary.confirm(
+                    "Continue anyway with default settings?", default=True
+                ).ask()
+                if proceed is None:
+                    step = 0
+                    continue
+                if not proceed:
+                    sys.exit(0)
+                step = 2
+
+        # ── Step 2: launch ───────────────────────────────────────────────────
+        elif step == 2:
+            categories = list(VALID_CATEGORIES)
+            _console.print(
+                f"[dim]Running all {len(categories)} categories "
+                f"with low severity threshold...[/dim]"
+            )
+            _console.print()
+            _launch_scan(url, categories, "terminal", "low", output_field, {}, headers={})
+            return
+
+
+# ---------------------------------------------------------------------------
+# Help screen
+# ---------------------------------------------------------------------------
+
+
+def _show_help() -> None:
+    """Display the in-app help guide then loop back to the landing screen."""
+    help_text = Text()
+
+    help_text.append("HOW TO GET A CURL FROM DEVTOOLS\n", style="bold yellow")
+    help_text.append("  1. Open Chrome/Edge → F12 → Network tab\n")
+    help_text.append("  2. Send a message to your chatbot in the browser\n")
+    help_text.append(
+        "  3. Right-click the request → Copy → Copy as cURL (bash)\n"
+        "     Then choose \"Import from curl command\" in PromptFuzz\n\n"
+    )
+
+    help_text.append("ATTACK CATEGORIES\n", style="bold yellow")
+    for cat, desc in _CATEGORY_DESCRIPTIONS.items():
+        help_text.append(f"  {cat:<20}", style="cyan")
+        help_text.append(f" {desc}\n")
+    help_text.append("\n")
+
+    help_text.append("CLI EXAMPLES\n", style="bold yellow")
+    help_text.append("  promptfuzz scan --target http://localhost:8000/chat --verbose\n")
+    help_text.append("  promptfuzz scan --target mymodule:my_fn --categories jailbreak\n")
+    help_text.append("  promptfuzz list-attacks\n\n")
+
+    help_text.append("PYTHON WRAPPER (for complex APIs)\n", style="bold yellow")
+    help_text.append("  from promptfuzz import Fuzzer\n\n")
+    help_text.append("  def my_bot(prompt: str) -> str:\n")
+    help_text.append("      # call your API here\n")
+    help_text.append("      return response_text\n\n")
+    help_text.append("  result = Fuzzer(target=my_bot).run()\n")
+    help_text.append("  result.report()\n")
 
     _console.print()
-    _launch_scan(target, categories, output_fmt, severity, output_field, extra_fields)
+    _console.print(Panel(help_text, title="PromptFuzz Help", border_style="yellow"))
+    _console.print()
+
+    run_wizard()
+
+
+# ---------------------------------------------------------------------------
+# Landing screen
+# ---------------------------------------------------------------------------
+
+
+def run_wizard() -> None:
+    """Show the landing screen and route to the chosen setup path.
+
+    Presents four options: manual setup, curl import, quick scan, and help.
+    ESC on landing screen exits the program.
+    """
+    _console.print()
+    _console.print(
+        Panel(
+            f"[bold cyan]PromptFuzz[/bold cyan] v{__version__} — LLM Security Testing\n"
+            "[dim]Find prompt injection, jailbreak & data extraction vulns[/dim]",
+            expand=False,
+            border_style="dim",
+        )
+    )
+    _console.print()
+
+    choice = questionary.select(
+        "How would you like to set up your scan?",
+        choices=[
+            questionary.Choice(
+                "Configure manually          Step-by-step guided setup",
+                value="manual",
+            ),
+            questionary.Choice(
+                "Import from curl command    Paste a cURL — auto-detects URL, headers & fields",
+                value="curl",
+            ),
+            questionary.Choice(
+                "Quick scan                  Fire all attacks at a URL right now (uses defaults)",
+                value="quick",
+            ),
+            questionary.Choice(
+                "Help & examples             Show usage guide and DevTools instructions",
+                value="help",
+            ),
+        ],
+    ).ask()
+
+    if choice is None:
+        sys.exit(0)
+
+    if choice == "manual":
+        _run_manual_wizard()
+    elif choice == "curl":
+        _run_curl_wizard()
+    elif choice == "quick":
+        _run_quick_scan()
+    elif choice == "help":
+        _show_help()
+
+
+# ---------------------------------------------------------------------------
+# Scan launcher
+# ---------------------------------------------------------------------------
 
 
 def _launch_scan(
@@ -345,6 +993,7 @@ def _launch_scan(
     severity: str,
     output_field: str = "response",
     extra_fields: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> None:
     """Execute the scan with the wizard's chosen settings.
 
@@ -355,12 +1004,12 @@ def _launch_scan(
         severity: Minimum severity to display ('low', 'medium', 'high', 'critical').
         output_field: JSON key containing the model reply in HTTP mode.
         extra_fields: Extra fixed key-value pairs merged into every request payload.
+        headers: HTTP headers to include in every request.
     """
     import importlib
 
     from promptfuzz.fuzzer import SEVERITY_WEIGHTS, Fuzzer  # noqa: F401
 
-    # Resolve target
     if target.startswith("http://") or target.startswith("https://"):
         resolved: object = target
     else:
@@ -378,6 +1027,7 @@ def _launch_scan(
         categories=categories,
         output_field=output_field,
         extra_fields=extra_fields or {},
+        headers=headers or {},
         verbose=False,
     )
 
