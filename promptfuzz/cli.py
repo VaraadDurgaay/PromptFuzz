@@ -114,6 +114,8 @@ def _run_scan(
     timeout: float,
     verbose: bool,
     target_label: str | None = None,
+    system_prompt: str | None = None,
+    judge_model: str = "gpt-4o-mini",
 ) -> None:
     """Resolve target, run fuzzer, print results, and optionally save reports.
 
@@ -130,6 +132,8 @@ def _run_scan(
         timeout: Per-attack timeout in seconds.
         verbose: Enable verbose output.
         target_label: Display label for the target (defaults to target string).
+        system_prompt: System prompt of the target app — enables LLM-as-judge mode.
+        judge_model: OpenAI model used as judge.
     """
     from promptfuzz.fuzzer import Fuzzer
 
@@ -139,6 +143,12 @@ def _run_scan(
         _err.print(f"[bold red]Error:[/bold red] {exc}")
         raise SystemExit(1) from exc
 
+    if system_prompt:
+        _console.print(
+            f"[dim]Judge mode:[/dim] [cyan]{judge_model}[/cyan] "
+            "[dim]will verify every positive hit[/dim]"
+        )
+
     fuzzer = Fuzzer(
         target=resolved,
         context=context,
@@ -146,6 +156,8 @@ def _run_scan(
         max_workers=max_workers,
         timeout=timeout,
         verbose=verbose,
+        system_prompt=system_prompt,
+        judge_model=judge_model,
     )
 
     _console.print(f"[bold]PromptFuzz[/bold] v{__version__} — starting scan")
@@ -212,6 +224,9 @@ def _resolve_target(target_str: str) -> Any:
 
     module_path, func_name = target_str.rsplit(":", 1)
     try:
+        cwd = str(Path.cwd())
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
         module = importlib.import_module(module_path)
     except ModuleNotFoundError as exc:
         raise click.BadParameter(
@@ -287,6 +302,14 @@ def main(ctx: click.Context) -> None:
     "--timeout", "-T", default=30.0, show_default=True, help="Per-attack timeout (s)."
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output.")
+@click.option(
+    "--system-prompt", "system_prompt", default=None,
+    help="Target app's system prompt. Enables LLM-as-judge to cut false positives.",
+)
+@click.option(
+    "--judge-model", "judge_model", default="gpt-4o-mini", show_default=True,
+    help="OpenAI model used as judge (requires --system-prompt).",
+)
 def test_cmd(
     target: str,
     context: str,
@@ -299,6 +322,8 @@ def test_cmd(
     max_workers: int,
     timeout: float,
     verbose: bool,
+    system_prompt: str | None,
+    judge_model: str,
 ) -> None:
     """Quick security test — pass a URL or module:function directly.
 
@@ -309,6 +334,7 @@ def test_cmd(
       $ promptfuzz test https://api.mychatbot.com/chat --txt report.txt
       $ promptfuzz test myapp:chat_handler --categories jailbreak injection
       $ promptfuzz test https://api.mychatbot.com/chat --fail-on high
+      $ promptfuzz test myapp:chat --system-prompt "You are a RAG assistant..."
     """
     _run_scan(
         target=target,
@@ -322,6 +348,8 @@ def test_cmd(
         max_workers=max_workers,
         timeout=timeout,
         verbose=verbose,
+        system_prompt=system_prompt,
+        judge_model=judge_model,
     )
 
 

@@ -67,7 +67,9 @@ def _parse_curl(curl_str: str) -> dict[str, Any]:
 
     result: dict[str, Any] = {"url": None, "headers": {}, "body_fields": {}}
 
-    skip_flags = {"-X", "--request", "--compressed", "-s", "--silent", "-v", "--verbose"}
+    skip_flags = {
+        "-X", "--request", "--compressed", "-s", "--silent", "-v", "--verbose"
+    }
     data_flags = {"--data-raw", "--data", "-d", "--data-urlencode"}
 
     i = 0
@@ -195,7 +197,9 @@ def _probe_url_with_headers(
             f"  Hint: Is the server running? Check the URL."
         ), {}
     except httpx.TimeoutException:
-        return False, "Connection timed out (10s). Is the server slow or unreachable?", {}
+        return False, (
+            "Connection timed out (10s). Is the server slow or unreachable?"
+        ), {}
 
 
 def _probe_url(
@@ -215,7 +219,9 @@ def _probe_url(
     Returns:
         Tuple of (ok, diagnostic_message).
     """
-    ok, msg, _ = _probe_url_with_headers(url, {}, input_field, output_field, extra_fields)
+    ok, msg, _ = _probe_url_with_headers(
+        url, {}, input_field, output_field, extra_fields
+    )
     return ok, msg
 
 
@@ -312,14 +318,17 @@ def _step_probe_and_pick_output(
     headers: dict[str, str],
     extra_fields: dict[str, str],
 ) -> Any:
-    """Probe URL and let user pick output field from response keys. Returns field str or _BACK."""
+    """Probe URL and pick output field from response keys.
+
+    Returns field str or _BACK.
+    """
     _console.print(f"[dim]Testing connection to {url}...[/dim]")
     ok, msg, response_data = _probe_url_with_headers(
         url, headers, "message", "", extra_fields
     )
 
     if ok and response_data:
-        _console.print(f"[green]Connected![/green]")
+        _console.print("[green]Connected![/green]")
         result = _select_output_field_from_response(response_data)
         if result is None:
             return _BACK
@@ -328,7 +337,9 @@ def _step_probe_and_pick_output(
         _console.print(f"[green]Connected![/green] {msg}")
     else:
         _console.print(f"[bold yellow]Connection test failed:[/bold yellow] {msg}")
-        retry = questionary.confirm("Fix the settings and try again?", default=True).ask()
+        retry = questionary.confirm(
+            "Fix the settings and try again?", default=True
+        ).ask()
         if retry is None:
             return _BACK
         if retry:
@@ -399,7 +410,10 @@ def _step_confirm_and_launch(
     extra_fields: dict[str, str],
     headers: dict[str, str],
 ) -> Any:
-    """Show summary panel and ask to confirm. Returns True to launch, _BACK on ESC, False on No."""
+    """Show summary panel and ask to confirm.
+
+    Returns True to launch, _BACK on ESC, False on No.
+    """
     from promptfuzz.attacks.loader import AttackLoader
 
     loader = AttackLoader()
@@ -523,10 +537,10 @@ def _run_manual_wizard() -> None:
     output_fmt: str = "terminal"
     severity: str = "low"
 
-    # Steps for URL targets: 0=target, 1=headers, 2=extra_fields, 3=output_field,
-    #                         4=categories, 5=output, 6=severity, 7=confirm
-    # Steps for function targets: 0=target, 1=categories, 2=output, 3=severity, 4=confirm
-    # We handle this by using a unified step index and skipping URL-only steps for functions.
+    # URL targets:      0=target, 1=headers, 2=extra_fields, 3=output_field,
+    #                   4=categories, 5=output, 6=severity, 7=confirm
+    # Function targets: 0=target, 1-3=skipped, 4=categories, 5=output,
+    #                   6=severity, 7=confirm
 
     step = 0
     while True:
@@ -575,7 +589,8 @@ def _run_manual_wizard() -> None:
             result = _step_ask_categories()
             if result is _BACK:
                 # Go back to output_field step (or target step for functions)
-                step = 3 if (target.startswith("http://") or target.startswith("https://")) else 0
+                is_url = target.startswith("http://") or target.startswith("https://")
+                step = 3 if is_url else 0
                 continue
             categories = result
             step = 5
@@ -641,7 +656,8 @@ def _run_curl_wizard() -> None:
         # ── Step 0: paste curl ───────────────────────────────────────────────
         if step == 0:
             _console.print(
-                "[dim]Paste your curl command (single line or with backslash continuations):[/dim]"
+                "[dim]Paste your curl command "
+                "(single line or with backslash continuations):[/dim]"
             )
             curl_raw = questionary.text("curl command:").ask()
             if curl_raw is None:
@@ -687,7 +703,8 @@ def _run_curl_wizard() -> None:
             if len(str_fields) == 1:
                 input_field = str_fields[0]
                 _console.print(
-                    f"[dim]Auto-selected input field:[/dim] [green]{input_field}[/green]"
+                    f"[dim]Auto-selected input field:[/dim] "
+                    f"[green]{input_field}[/green]"
                 )
                 step = 2
             elif str_fields:
@@ -713,14 +730,16 @@ def _run_curl_wizard() -> None:
 
         # ── Step 2: probe + output field ─────────────────────────────────────
         elif step == 2:
-            extra_fields = {k: str(v) for k, v in body_fields.items() if k != input_field}
+            extra_fields = {
+                k: str(v) for k, v in body_fields.items() if k != input_field
+            }
             _console.print(f"[dim]Probing {url}...[/dim]")
             ok, msg, response_data = _probe_url_with_headers(
                 url, headers, input_field, "", extra_fields
             )
 
             if ok and response_data:
-                _console.print(f"[green]Connected![/green]")
+                _console.print("[green]Connected![/green]")
                 picked = _select_output_field_from_response(response_data)
                 if picked is None:
                     step = 1
@@ -807,7 +826,10 @@ def _run_curl_wizard() -> None:
 
 
 def _run_quick_scan() -> None:
-    """Ask for URL only and run all categories with defaults. ESC goes back to landing."""
+    """Ask for URL only and run all categories with defaults.
+
+    ESC goes back to landing.
+    """
     url: str = ""
     output_field: str = "response"
 
@@ -852,7 +874,7 @@ def _run_quick_scan() -> None:
                     output_field = picked
                     step = 2
                 else:
-                    _console.print(f"[green]Connected![/green]")
+                    _console.print("[green]Connected![/green]")
                     step = 2
             elif ok:
                 _console.print(f"[green]Connected![/green] {msg}")
@@ -877,7 +899,9 @@ def _run_quick_scan() -> None:
                 f"with low severity threshold...[/dim]"
             )
             _console.print()
-            _launch_scan(url, categories, "terminal", "low", output_field, {}, headers={})
+            _launch_scan(
+                url, categories, "terminal", "low", output_field, {}, headers={}
+            )
             return
 
 
@@ -905,8 +929,12 @@ def _show_help() -> None:
     help_text.append("\n")
 
     help_text.append("CLI EXAMPLES\n", style="bold yellow")
-    help_text.append("  promptfuzz scan --target http://localhost:8000/chat --verbose\n")
-    help_text.append("  promptfuzz scan --target mymodule:my_fn --categories jailbreak\n")
+    help_text.append(
+        "  promptfuzz scan --target http://localhost:8000/chat --verbose\n"
+    )
+    help_text.append(
+        "  promptfuzz scan --target mymodule:my_fn --categories jailbreak\n"
+    )
     help_text.append("  promptfuzz list-attacks\n\n")
 
     help_text.append("PYTHON WRAPPER (for complex APIs)\n", style="bold yellow")
@@ -954,15 +982,18 @@ def run_wizard() -> None:
                 value="manual",
             ),
             questionary.Choice(
-                "Import from curl command    Paste a cURL — auto-detects URL, headers & fields",
+                "Import from curl command    "
+                "Paste a cURL — auto-detects URL, headers & fields",
                 value="curl",
             ),
             questionary.Choice(
-                "Quick scan                  Fire all attacks at a URL right now (uses defaults)",
+                "Quick scan                  "
+                "Fire all attacks at a URL right now (uses defaults)",
                 value="quick",
             ),
             questionary.Choice(
-                "Help & examples             Show usage guide and DevTools instructions",
+                "Help & examples             "
+                "Show usage guide and DevTools instructions",
                 value="help",
             ),
         ],
