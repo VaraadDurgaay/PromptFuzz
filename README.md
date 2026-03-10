@@ -39,6 +39,8 @@ pip install "promptfuzz[anthropic]"  # if your target uses Anthropic
 
 ### 1. Interactive wizard (recommended for first-time users)
 
+![Wizard UI](assets/Wizard_UI.png)
+
 Just run `promptfuzz` with no arguments:
 
 ```
