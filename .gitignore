@@ -73,3 +73,6 @@ my_test.py
 
 # Generated reports
 report.txt
+
+# Owner-only files
+CLAUDE.md
