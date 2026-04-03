@@ -14,9 +14,10 @@ Find prompt injection, jailbreak, and data extraction vulnerabilities before att
 You ship an LLM-powered product. You add a system prompt. You think it's secure.
 It isn't. **PromptFuzz finds out before your users do.**
 
-PromptFuzz fires 165+ real adversarial attack prompts — jailbreaks, prompt injections,
-data extraction attempts, goal hijacking, and edge cases — at your application and
-generates a professional vulnerability report in seconds.
+PromptFuzz fires 165+ single-turn adversarial prompts **plus 12 multi-turn attack chains** —
+jailbreaks, prompt injections, data extraction, goal hijacking, edge cases, and
+conversation-level escalation sequences — at your application and generates a professional
+vulnerability report in seconds.
 
 ---
 
@@ -163,6 +164,8 @@ and reads the `"response"` field from the reply. Both field names are configurab
 
 ## Attack categories
 
+### Single-turn attacks (165 prompts)
+
 | Category | Count | What it tests |
 |---|---|---|
 | `jailbreak` | 40 | DAN variants, persona switches, roleplay bypasses, encoding tricks |
@@ -171,6 +174,20 @@ and reads the `"response"` field from the reply. Both field names are configurab
 | `goal_hijacking` | 25 | Competitor promotion, purpose replacement, loyalty switches |
 | `edge_cases` | 30 | Unicode abuse, long inputs, encoding edge cases, null bytes |
 | **Total** | **165** | |
+
+### Multi-turn attack chains (12 chains)
+
+Multi-turn chains simulate realistic adversarial conversations where an attacker probes,
+builds rapport, and escalates across several exchanges — bypasses that a single-shot
+prompt could never reach. Each chain branches dynamically: the next turn is chosen based
+on whether the model complied or refused the previous one.
+
+| Chain file | Chains | Severity | What it tests |
+|---|---|---|---|
+| `escalation_chains` | 4 | critical / high | Rapport-building → persona override, authority escalation, roleplay ramp-up, hypothetical framing |
+| `extraction_chains` | 4 | critical / high | Capability probing → system prompt leak, incremental instruction segmentation, false memory injection, echo-pattern escalation |
+| `injection_chains` | 4 | critical / high / medium | Gradual instruction erosion, context poisoning via conversation history, delimiter probing → injection, goal drift via topic shift |
+| **Total** | **12** | | **3–4 turns per chain** |
 
 ```bash
 promptfuzz list-attacks   # view full table with severity breakdown
@@ -274,9 +291,16 @@ Formula: `max(0, 100 − (critical×25 + high×10 + medium×5 + low×2))`
 
 ## Contributing
 
-Adding new attacks is the easiest way to contribute. Each attack is a JSON object
-in one of the five files under `promptfuzz/attacks/`. Copy an existing entry, update
-the `id`, `name`, `prompt`, and `detection` fields, and open a PR.
+Adding new attacks is the easiest way to contribute.
+
+**Single-turn attacks** — each attack is a JSON object in one of the five files under
+`promptfuzz/attacks/`. Copy an existing entry, update the `id`, `name`, `prompt`, and
+`detection` fields, and open a PR.
+
+**Multi-turn chains** — each chain lives in `promptfuzz/attacks/chains/` and defines a
+branching conversation sequence. Copy an existing chain from the relevant file
+(`escalation_chains.json`, `extraction_chains.json`, or `injection_chains.json`),
+update the `id`, `name`, `turns`, and `detection` for each turn, and open a PR.
 
 ```json
 {
