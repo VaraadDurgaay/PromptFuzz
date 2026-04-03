@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jinja2 import Environment
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -79,8 +80,8 @@ _HTML_TEMPLATE = """\
 </style>
 </head>
 <body>
-<h1>PromptFuzz Security Report</h1>
-<p class="subtitle">Target: <strong>{{ result.target_description }}</strong> &nbsp;|&nbsp; Context: {{ result.context }} &nbsp;|&nbsp; {{ result.timestamp[:10] }}</p>
+<h1><span style="color:var(--text)">PROMPT</span><span style="color:var(--critical)">FUZZ</span></h1>
+<p class="subtitle">security report &nbsp;·&nbsp; <strong>{{ result.target_description }}</strong> &nbsp;·&nbsp; {{ result.timestamp[:10] }}</p>
 
 <div class="score-wrap">
   <div class="gauge"><div class="gauge-inner">{{ result.score }}</div></div>
@@ -174,17 +175,17 @@ def _letter_grade(score: int) -> str:
 
 
 def _score_bar(score: int, width: int = 38) -> str:
-    """Render an ASCII progress bar for the given score.
+    """Render a progress bar for the given score.
 
     Args:
         score: Integer security score in [0, 100].
         width: Total character width of the bar.
 
     Returns:
-        Bar string using filled (#) and empty (-) characters.
+        Bar string using filled (█) and empty (░) characters.
     """
     filled = round(score * width / 100)
-    return "#" * filled + "-" * (width - filled)
+    return "█" * filled + "░" * (width - filled)
 
 
 class Reporter:
@@ -197,7 +198,14 @@ class Reporter:
             result: The FuzzResult to display.
         """
         _console.print()
-        _console.rule("[bold]PromptFuzz Security Report[/bold]")
+        _console.rule(style="dim")
+        _console.print(
+            f"  [bold white]PROMPT[/bold white][bold red]FUZZ[/bold red]"
+            f"  [dim]security report[/dim]"
+            f"  [dim]·  {result.target_description}"
+            f"  ·  {result.timestamp[:10]}[/dim]"
+        )
+        _console.rule(style="dim")
         _console.print()
 
         # ── Score block ───────────────────────────────────────────────────
@@ -205,10 +213,10 @@ class Reporter:
         grade = _letter_grade(score)
 
         score_colour, risk_label = (
-            ("bright_green", "LOW RISK")      if score >= 80 else
-            ("yellow",       "MEDIUM RISK")   if score >= 50 else
-            ("orange3",      "HIGH RISK")     if score >= 20 else
-            ("red",          "CRITICAL RISK")
+            ("bright_green", "low risk")      if score >= 80 else
+            ("yellow",       "medium risk")   if score >= 50 else
+            ("orange3",      "high risk")     if score >= 20 else
+            ("red",          "critical risk")
         )
 
         n_fail = sum(
@@ -220,18 +228,26 @@ class Reporter:
 
         bar = _score_bar(score)
 
-        score_body = (
-            f"  [{score_colour}]{score:>3}/100[/{score_colour}]"
-            f"  [bold {score_colour}]{grade}[/bold {score_colour}]"
-            f"  [{score_colour}]{risk_label}[/{score_colour}]\n\n"
-            f"  [{score_colour}]{bar}[/{score_colour}]\n\n"
-            f"  [bold red]FAIL  {n_fail:>4}[/bold red]"
-            f"   [bold yellow]WARN  {n_warn:>4}[/bold yellow]"
-            f"   [bold green]PASS  {n_pass:>4}[/bold green]"
-            f"   [dim]ERR   {n_err:>4}[/dim]\n"
-            f"  [dim]{result.attacks_run} attacks · {result.duration_seconds:.1f}s[/dim]"
+        _console.print(
+            f"  [{score_colour} bold]{score:>3}[/{score_colour} bold]"
+            f"  [dim]/100[/dim]"
+            f"     [{score_colour} bold]{grade}[/{score_colour} bold]"
+            f"   [dim]{risk_label}[/dim]"
         )
-        _console.print(Panel(score_body, title="[bold]Security Score[/bold]", expand=False))
+        _console.print()
+        _console.print(f"  [{score_colour}]{bar}[/{score_colour}]")
+        _console.print()
+        _console.print(
+            f"  [red]✖  fail   {n_fail:>3}[/red]"
+            f"   [yellow]⚠  warn   {n_warn:>3}[/yellow]"
+            f"   [green]✔  pass   {n_pass:>3}[/green]"
+            f"   [dim]·  err  {n_err}[/dim]"
+        )
+        _console.print(
+            f"  [dim]{result.attacks_run} attacks  ·  {result.duration_seconds:.1f}s[/dim]"
+        )
+        _console.print()
+        _console.rule(style="dim")
         _console.print()
 
         # ── Category breakdown ────────────────────────────────────────────
@@ -250,16 +266,17 @@ class Reporter:
 
         if cat_stats:
             cat_table = Table(
-                title="Category Breakdown",
+                title=None,
                 show_header=True,
-                header_style="bold dim",
+                header_style="dim",
                 box=None,
                 padding=(0, 2),
+                pad_edge=False,
             )
-            cat_table.add_column("Category", min_width=18)
-            cat_table.add_column("FAIL", justify="right", style="bold red")
-            cat_table.add_column("WARN", justify="right", style="bold yellow")
-            cat_table.add_column("PASS", justify="right", style="bold green")
+            cat_table.add_column("category", min_width=18)
+            cat_table.add_column("fail", justify="right", style="red")
+            cat_table.add_column("warn", justify="right", style="yellow")
+            cat_table.add_column("pass", justify="right", style="green")
 
             for cat in sorted(cat_stats):
                 s = cat_stats[cat]
@@ -275,16 +292,18 @@ class Reporter:
         # ── Vulnerability table ───────────────────────────────────────────
         if result.vulnerabilities:
             vtable = Table(
-                title="Findings",
+                title=None,
                 show_header=True,
-                header_style="bold dim",
+                header_style="dim",
+                box=box.SIMPLE_HEAD,
+                pad_edge=False,
             )
-            vtable.add_column("Status", width=8)
-            vtable.add_column("ID", style="dim", width=10)
-            vtable.add_column("Name", min_width=28)
-            vtable.add_column("Category", width=16)
-            vtable.add_column("Severity", width=10)
-            vtable.add_column("Confidence", width=10, justify="right")
+            vtable.add_column("status", width=8)
+            vtable.add_column("id", style="dim", width=10)
+            vtable.add_column("name", min_width=28)
+            vtable.add_column("category", width=16)
+            vtable.add_column("severity", width=10)
+            vtable.add_column("confidence", width=10, justify="right")
 
             for vuln in sorted(
                 result.vulnerabilities,
@@ -293,67 +312,61 @@ class Reporter:
                 colour = SEVERITY_COLOURS.get(vuln.severity, "white")
                 is_fail = vuln.severity in _STATUS_FAIL_SEVS
                 status_text = (
-                    Text("FAIL", style="bold red")
+                    Text("fail", style="red")
                     if is_fail
-                    else Text("WARN", style="bold yellow")
+                    else Text("warn", style="yellow")
                 )
                 vtable.add_row(
                     status_text,
                     vuln.id,
                     vuln.name,
                     vuln.attack.category,
-                    Text(vuln.severity.upper(), style=f"bold {colour}"),
+                    Text(vuln.severity, style=colour),
                     f"{vuln.result.confidence * 100:.0f}%",
                 )
 
             _console.print(vtable)
         else:
             _console.print(
-                Panel(
-                    "[bold green]PASS  All attacks passed — no vulnerabilities detected.[/bold green]",
-                    border_style="green",
-                    expand=False,
-                )
+                "  [green]✓[/green]  [dim]all attacks passed — no vulnerabilities detected[/dim]"
             )
 
         # ── Multi-turn chain results ──────────────────────────────────────
         if result.chain_results:
             chain_table = Table(
-                title="Multi-Turn Chain Results",
+                title=None,
                 show_header=True,
-                header_style="bold dim",
+                header_style="dim",
+                box=box.SIMPLE_HEAD,
+                pad_edge=False,
             )
-            chain_table.add_column("ID", style="dim", width=12)
-            chain_table.add_column("Name", min_width=30)
-            chain_table.add_column("Turns", width=6, justify="right")
-            chain_table.add_column("Result", width=10)
-            chain_table.add_column("Severity", width=10)
-            chain_table.add_column("Time", width=9, justify="right")
+            chain_table.add_column("id", style="dim", width=12)
+            chain_table.add_column("name", min_width=30)
+            chain_table.add_column("turns", width=6, justify="right")
+            chain_table.add_column("result", width=10)
+            chain_table.add_column("severity", width=10)
+            chain_table.add_column("time", width=9, justify="right")
 
             for cr in result.chain_results:
                 colour = SEVERITY_COLOURS.get(cr.final_severity, "white")
                 status = (
-                    Text("VULN", style="bold red")
+                    Text("vuln", style="red")
                     if cr.is_vulnerable
-                    else Text("SAFE", style="bold green")
+                    else Text("safe", style="green")
                 )
                 chain_table.add_row(
                     cr.chain.id,
                     cr.chain.name,
                     str(len(cr.turn_results)),
                     status,
-                    Text(cr.final_severity.upper(), style=f"bold {colour}"),
+                    Text(cr.final_severity, style=colour),
                     f"{cr.total_elapsed_ms:.0f}ms",
                 )
             _console.print(chain_table)
             _console.print()
 
         _console.print()
-        _console.print(
-            f"[dim]Target:[/dim] {result.target_description}  "
-            f"[dim]Context:[/dim] {result.context}  "
-            f"[dim]Timestamp:[/dim] {result.timestamp[:19]}"
-        )
+        _console.print(f"  [dim]context  {result.context}[/dim]")
         _console.print()
 
     def save_html(self, result: "FuzzResult", path: str) -> None:

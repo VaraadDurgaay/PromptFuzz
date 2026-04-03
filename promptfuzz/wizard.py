@@ -21,6 +21,22 @@ _console = Console()
 # Sentinel returned by step functions when the user presses ESC (go back).
 _BACK = object()
 
+_LOGO_PROMPT = (
+    "   ____   ____    ___   __  __  ____  ______\n"
+    "  |  _ \\ |  _ \\  / _ \\ |  \\/  ||  _ \\|_   _|\n"
+    "  | |_) || |_) || | | || |\\/| || |_) | | |  \n"
+    "  |  __/ |  _ < | |_| || |  | ||  __/  | |  \n"
+    "  |_|    |_| \\_\\ \\___/ |_|  |_||_|     |_|  "
+)
+
+_LOGO_FUZZ = (
+    "   _____  _   _  _____  _____ \n"
+    "  |  ___|| | | ||__  / |__  / \n"
+    "  | |_   | | | |  / /    / /  \n"
+    "  |  _|  | |_| | / /_   / /_  \n"
+    "  |_|     \\___/ /_____|/_____|"
+)
+
 _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "jailbreak": "Persona switches, DAN, roleplay bypasses",
     "injection": "Prompt override, delimiter attacks",
@@ -30,30 +46,30 @@ _CATEGORY_DESCRIPTIONS: dict[str, str] = {
 }
 
 _OUTPUT_CHOICES = [
-    questionary.Choice("Terminal only", value="terminal"),
-    questionary.Choice("Terminal + TXT file  (report.txt)", value="txt"),
-    questionary.Choice("Terminal + HTML report  (report.html)", value="html"),
-    questionary.Choice("All formats", value="all"),
+    questionary.Choice("terminal only", value="terminal"),
+    questionary.Choice("terminal + report.txt", value="txt"),
+    questionary.Choice("terminal + report.html", value="html"),
+    questionary.Choice("all formats  (txt + html + json)", value="all"),
 ]
 
 _SEVERITY_CHOICES = [
-    questionary.Choice("low  (show everything)", value="low"),
+    questionary.Choice("low      show everything", value="low"),
     questionary.Choice("medium", value="medium"),
     questionary.Choice("high", value="high"),
-    questionary.Choice("critical only", value="critical"),
+    questionary.Choice("critical  only the worst", value="critical"),
 ]
 
 _SCAN_MODE_CHOICES = [
     questionary.Choice(
-        "Single-shot only   — 165 targeted attacks, one prompt per test",
+        "single-shot  —  165 targeted attacks, one prompt per test",
         value="single",
     ),
     questionary.Choice(
-        "Multi-turn only    — 12 chain attacks, gradual escalation across turns",
+        "multi-turn   —  12 chain attacks, gradual escalation across turns",
         value="chains",
     ),
     questionary.Choice(
-        "Both               — full coverage (recommended)",
+        "both         —  full coverage (recommended)",
         value="both",
     ),
 ]
@@ -361,15 +377,15 @@ def _step_probe_and_pick_output(
     )
 
     if ok and response_data:
-        _console.print("[green]Connected![/green]")
+        _console.print("[green]connected[/green]")
         result = _select_output_field_from_response(response_data)
         if result is None:
             return _BACK
         return result
     elif ok:
-        _console.print(f"[green]Connected![/green] {msg}")
+        _console.print(f"[green]connected[/green] {msg}")
     else:
-        _console.print(f"[bold yellow]Connection test failed:[/bold yellow] {msg}")
+        _console.print(f"[yellow]connection failed:[/yellow] {msg}")
         retry = questionary.confirm(
             "Fix the settings and try again?", default=True
         ).ask()
@@ -470,43 +486,45 @@ def _step_confirm_and_launch(
     }[output_fmt]
 
     summary = Text()
-    summary.append("  Target   : ", style="dim")
+    summary.append("  target   ", style="dim")
     summary.append(f"{target}\n", style="cyan")
 
     if scan_mode in {"single", "both"}:
         loader = AttackLoader()
         attacks = loader.load_categories(categories)
-        summary.append("  Attacks  : ", style="dim")
+        summary.append("  attacks  ", style="dim")
         summary.append(
-            f"{len(attacks)}  ({' + '.join(categories)})\n", style="green"
+            f"{len(attacks)}  ({' + '.join(categories)})\n"
         )
 
     if scan_mode in {"chains", "both"}:
         chain_loader = ChainLoader()
         chains = chain_loader.load_all()
-        summary.append("  Chains   : ", style="dim")
-        summary.append(f"{len(chains)} multi-turn attack chains\n", style="magenta")
+        summary.append("  chains   ", style="dim")
+        summary.append(f"{len(chains)} multi-turn\n")
 
-    summary.append("  Mode     : ", style="dim")
+    summary.append("  mode     ", style="dim")
     mode_label = {
-        "single": "Single-shot only",
-        "chains": "Multi-turn chains only",
-        "both": "Both (full coverage)",
+        "single": "single-shot",
+        "chains": "multi-turn chains",
+        "both": "both (full coverage)",
     }[scan_mode]
     summary.append(f"{mode_label}\n")
-    summary.append("  Output   : ", style="dim")
+    summary.append("  output   ", style="dim")
     summary.append(f"{output_label}\n")
-    summary.append("  Severity : ", style="dim")
+    summary.append("  severity ", style="dim")
     summary.append(f"{severity}+\n")
     if extra_fields:
-        summary.append("  Extra    : ", style="dim")
+        summary.append("  extra    ", style="dim")
         summary.append(f"{', '.join(f'{k}={v}' for k, v in extra_fields.items())}\n")
     if headers:
-        summary.append("  Headers  : ", style="dim")
+        summary.append("  headers  ", style="dim")
         summary.append(f"{', '.join(headers.keys())}\n")
 
     _console.print()
-    _console.print(Panel(summary, title="Scan configuration", border_style="cyan"))
+    _console.rule("[dim]scan configuration[/dim]", style="dim")
+    _console.print(summary)
+    _console.rule(style="dim")
     _console.print()
 
     go = questionary.confirm(
@@ -732,10 +750,10 @@ def _run_curl_wizard() -> None:
         # ── Step 0: paste curl ───────────────────────────────────────────────
         if step == 0:
             _console.print(
-                "[dim]Paste your curl command "
-                "(single line or with backslash continuations):[/dim]"
+                "[dim]paste your curl command "
+                "(single line or with backslash continuations)[/dim]"
             )
-            curl_raw = questionary.text("curl command:").ask()
+            curl_raw = questionary.text("curl:").ask()
             if curl_raw is None:
                 run_wizard()
                 return
@@ -749,20 +767,18 @@ def _run_curl_wizard() -> None:
             field_names = ", ".join(str(k) for k in body_fields.keys()) or "(none)"
 
             _console.print()
+            _console.rule("[dim]parsed[/dim]", style="dim")
             _console.print(
-                Panel(
-                    f"  [dim]URL    :[/dim] [cyan]{url or '(not found)'}[/cyan]\n"
-                    f"  [dim]Headers:[/dim] {header_names}\n"
-                    f"  [dim]Fields :[/dim] {field_names}",
-                    title="Parsed curl",
-                    border_style="green" if url else "yellow",
-                )
+                f"  [dim]url     [/dim] [cyan]{url or '(not found)'}[/cyan]\n"
+                f"  [dim]headers [/dim] {header_names}\n"
+                f"  [dim]fields  [/dim] {field_names}"
             )
+            _console.rule(style="dim")
             _console.print()
 
             if not url:
                 _console.print(
-                    "[bold yellow]Could not detect URL from curl command.[/bold yellow]"
+                    "[yellow]Could not detect URL from curl command.[/yellow]"
                 )
                 switch = questionary.confirm(
                     "Switch to manual setup instead?", default=True
@@ -779,8 +795,7 @@ def _run_curl_wizard() -> None:
             if len(str_fields) == 1:
                 input_field = str_fields[0]
                 _console.print(
-                    f"[dim]Auto-selected input field:[/dim] "
-                    f"[green]{input_field}[/green]"
+                    f"[dim]input field →[/dim] [cyan]{input_field}[/cyan]"
                 )
                 step = 2
             elif str_fields:
@@ -809,20 +824,20 @@ def _run_curl_wizard() -> None:
             extra_fields = {
                 k: str(v) for k, v in body_fields.items() if k != input_field
             }
-            _console.print(f"[dim]Probing {url}...[/dim]")
+            _console.print(f"[dim]probing {url}...[/dim]")
             ok, msg, response_data = _probe_url_with_headers(
                 url, headers, input_field, "", extra_fields
             )
 
             if ok and response_data:
-                _console.print("[green]Connected![/green]")
+                _console.print("[green]connected[/green]")
                 picked = _select_output_field_from_response(response_data)
                 if picked is None:
                     step = 1
                     continue
                 output_field = picked
             elif ok:
-                _console.print(f"[green]Connected![/green] {msg}")
+                _console.print(f"[green]connected[/green] {msg}")
                 field_text = questionary.text(
                     "Response field name (JSON key the API returns the reply in):",
                     default="response",
@@ -832,7 +847,7 @@ def _run_curl_wizard() -> None:
                     continue
                 output_field = (field_text or "response").strip()
             else:
-                _console.print(f"[bold yellow]Probe failed:[/bold yellow] {msg}")
+                _console.print(f"[yellow]probe failed:[/yellow] {msg}")
                 proceed = questionary.confirm(
                     "Continue anyway (type output field manually)?", default=True
                 ).ask()
@@ -964,7 +979,7 @@ def _run_quick_scan() -> None:
 
         # ── Step 3: probe + output field ─────────────────────────────────────
         elif step == 3:
-            _console.print(f"[dim]Probing {url}...[/dim]")
+            _console.print(f"[dim]probing {url}...[/dim]")
             ok, msg, response_data = _probe_url_with_headers(
                 url, headers, "message", "", extra_fields
             )
@@ -974,8 +989,8 @@ def _run_quick_scan() -> None:
                 if len(str_keys) == 1:
                     output_field = str_keys[0]
                     _console.print(
-                        f"[green]Connected![/green] Auto-selected output field: "
-                        f"[bold]{output_field}[/bold]"
+                        f"[green]connected[/green]  [dim]output field →[/dim] "
+                        f"[cyan]{output_field}[/cyan]"
                     )
                     step = 4
                 elif str_keys:
@@ -986,13 +1001,13 @@ def _run_quick_scan() -> None:
                     output_field = picked
                     step = 4
                 else:
-                    _console.print("[green]Connected![/green]")
+                    _console.print("[green]connected[/green]")
                     step = 4
             elif ok:
-                _console.print(f"[green]Connected![/green] {msg}")
+                _console.print(f"[green]connected[/green] {msg}")
                 step = 4
             else:
-                _console.print(f"[bold yellow]Probe failed:[/bold yellow] {msg}")
+                _console.print(f"[yellow]probe failed:[/yellow] {msg}")
                 proceed = questionary.confirm(
                     "Continue anyway with default settings?", default=True
                 ).ask()
@@ -1007,8 +1022,7 @@ def _run_quick_scan() -> None:
         elif step == 4:
             categories = list(VALID_CATEGORIES)
             _console.print(
-                f"[dim]Running all {len(categories)} categories "
-                f"with low severity threshold...[/dim]"
+                f"[dim]running {len(categories)} categories, low threshold...[/dim]"
             )
             _console.print()
             _launch_scan(
@@ -1027,39 +1041,43 @@ def _show_help() -> None:
     """Display the in-app help guide then loop back to the landing screen."""
     help_text = Text()
 
-    help_text.append("HOW TO GET A CURL FROM DEVTOOLS\n", style="bold yellow")
-    help_text.append("  1. Open Chrome/Edge → F12 → Network tab\n")
-    help_text.append("  2. Send a message to your chatbot in the browser\n")
+    help_text.append("getting a curl from devtools\n", style="bold")
+    help_text.append("  1. open chrome/edge → F12 → network tab\n", style="dim")
+    help_text.append("  2. send a message to your chatbot in the browser\n", style="dim")
     help_text.append(
-        "  3. Right-click the request → Copy → Copy as cURL (bash)\n"
-        "     Then choose \"Import from curl command\" in PromptFuzz\n\n"
+        "  3. right-click the request → copy → copy as cURL (bash)\n", style="dim"
+    )
+    help_text.append(
+        "     then choose \"import from curl\" in PromptFuzz\n\n", style="dim"
     )
 
-    help_text.append("ATTACK CATEGORIES\n", style="bold yellow")
+    help_text.append("attack categories\n", style="bold")
     for cat, desc in _CATEGORY_DESCRIPTIONS.items():
         help_text.append(f"  {cat:<20}", style="cyan")
-        help_text.append(f" {desc}\n")
+        help_text.append(f" {desc}\n", style="dim")
     help_text.append("\n")
 
-    help_text.append("CLI EXAMPLES\n", style="bold yellow")
+    help_text.append("cli examples\n", style="bold")
     help_text.append(
-        "  promptfuzz scan --target http://localhost:8000/chat --verbose\n"
+        "  promptfuzz scan --target http://localhost:8000/chat --verbose\n", style="dim"
     )
     help_text.append(
-        "  promptfuzz scan --target mymodule:my_fn --categories jailbreak\n"
+        "  promptfuzz scan --target mymodule:my_fn --categories jailbreak\n", style="dim"
     )
-    help_text.append("  promptfuzz list-attacks\n\n")
+    help_text.append("  promptfuzz list-attacks\n\n", style="dim")
 
-    help_text.append("PYTHON WRAPPER (for complex APIs)\n", style="bold yellow")
-    help_text.append("  from promptfuzz import Fuzzer\n\n")
-    help_text.append("  def my_bot(prompt: str) -> str:\n")
-    help_text.append("      # call your API here\n")
-    help_text.append("      return response_text\n\n")
-    help_text.append("  result = Fuzzer(target=my_bot).run()\n")
-    help_text.append("  result.report()\n")
+    help_text.append("python wrapper (for complex APIs)\n", style="bold")
+    help_text.append("  from promptfuzz import Fuzzer\n\n", style="dim")
+    help_text.append("  def my_bot(prompt: str) -> str:\n", style="dim")
+    help_text.append("      # call your API here\n", style="dim")
+    help_text.append("      return response_text\n\n", style="dim")
+    help_text.append("  result = Fuzzer(target=my_bot).run()\n", style="dim")
+    help_text.append("  result.report()\n", style="dim")
 
     _console.print()
-    _console.print(Panel(help_text, title="PromptFuzz Help", border_style="yellow"))
+    _console.rule("[dim]help[/dim]", style="dim")
+    _console.print(help_text)
+    _console.rule(style="dim")
     _console.print()
 
     run_wizard()
@@ -1077,36 +1095,34 @@ def run_wizard() -> None:
     ESC on landing screen exits the program.
     """
     _console.print()
+    _console.print(_LOGO_PROMPT, style="bold white")
+    _console.print(_LOGO_FUZZ, style="bold red")
+    _console.print()
     _console.print(
-        Panel(
-            f"[bold cyan]PromptFuzz[/bold cyan] v{__version__} — LLM Security Testing\n"
-            "[dim]Find prompt injection, jailbreak & data extraction vulns[/dim]",
-            expand=False,
-            border_style="dim",
-        )
+        f"  [dim]adversarial LLM security testing"
+        f"  ·  v{__version__}"
+        f"  ·  165 attacks  ·  5 categories[/dim]"
     )
+    _console.rule(style="dim")
     _console.print()
 
     choice = questionary.select(
-        "How would you like to set up your scan?",
+        "how to set up your scan?",
         choices=[
             questionary.Choice(
-                "Configure manually          Step-by-step guided setup",
-                value="manual",
-            ),
-            questionary.Choice(
-                "Import from curl command    "
-                "Paste a cURL — auto-detects URL, headers & fields",
+                "curl import    ★  paste a curl command — auto-detects URL, headers & fields",
                 value="curl",
             ),
             questionary.Choice(
-                "Quick scan                  "
-                "Fire all attacks at a URL right now (uses defaults)",
+                "manual setup      step-by-step guided configuration",
+                value="manual",
+            ),
+            questionary.Choice(
+                "quick scan        fire all 165 attacks now, zero config",
                 value="quick",
             ),
             questionary.Choice(
-                "Help & examples             "
-                "Show usage guide and DevTools instructions",
+                "help              DevTools guide · CLI usage · attack list",
                 value="help",
             ),
         ],
